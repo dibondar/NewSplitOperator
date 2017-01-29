@@ -175,6 +175,12 @@ class SchrodingerWignerCUDA1D:
         except AttributeError:
             pass
 
+        # Append all other user defined functions, if specified
+        try:
+            self.preamble += self.functions.format(**self.cuda_types)
+        except AttributeError:
+            pass
+
         # Declare potential and kinetic energy functions
         self.preamble += \
             "\n// Potential energy" \
@@ -183,12 +189,6 @@ class SchrodingerWignerCUDA1D:
             "\n// Kinetic energy" \
             "\n__device__ {cuda_real} K(const {cuda_real} P, const {cuda_real} t)" \
             "\n{{\n\treturn ({K}); \n}}\n".format(V=self.V, K=self.K, **self.cuda_types)
-
-        # Append all other user defined functions, if specified
-        try:
-            self.preamble += self.functions
-        except AttributeError:
-            pass
 
         ##########################################################################################
         #
@@ -211,7 +211,7 @@ class SchrodingerWignerCUDA1D:
 
         ##########################################################################################
         #
-        # Set CUDA functions for propagation
+        # Set CUDA functions for real time propagation
         #
         ##########################################################################################
 
@@ -222,7 +222,7 @@ class SchrodingerWignerCUDA1D:
                     const {cuda_real} X = dX * (i - 0.5 * X_gridDIM);
                     const {cuda_real} phase = -0.5 * dt * V(X, t);
 
-                    psi[i] *= {cuda_complex}(cos(phase), sin(phase)) * ({abs_boundary_x});
+                    psi[i] *= {cuda_complex}(cos(phase), sin(phase)) * {cuda_real}({abs_boundary_x});
                     """.format(abs_boundary_x=self.abs_boundary_x, **self.cuda_types),
 
             preamble=self.preamble
@@ -235,7 +235,7 @@ class SchrodingerWignerCUDA1D:
                     const {cuda_real} P = dP * (i - 0.5 * X_gridDIM);
                     const {cuda_real} phase = -dt * K(P, t);
 
-                    psi[i] *= {cuda_complex}(cos(phase), sin(phase)) * ({abs_boundary_p});
+                    psi[i] *= {cuda_complex}(cos(phase), sin(phase)) * {cuda_real}({abs_boundary_p});
                     """.format(abs_boundary_p=self.abs_boundary_p, **self.cuda_types),
 
             preamble=self.preamble
@@ -247,6 +247,52 @@ class SchrodingerWignerCUDA1D:
             neutral="0.",
             reduce_expr="a + b",
             map_expr="pow(abs(psi[i]), 2)",
+        )
+
+        ##########################################################################################
+        #
+        # Set CUDA functions for imaginary time propagation
+        #
+        ##########################################################################################
+
+        # # Find the potential energy minimum
+        # self.V_min = ReductionKernel(
+        #     self.wavefunction.real.dtype,
+        #     arguments="const {cuda_complex} *psi".format(**self.cuda_types), # Pure formality: The argument never used
+        #     neutral="0.",
+        #     reduce_expr="min(a, b)",
+        #     map_expr="V(dX * (i - 0.5 * X_gridDIM), t_initial)",
+        #     preamble=self.preamble
+        # )(self.wavefunction).get()
+
+        self.bloch_expV = ElementwiseKernel(
+            arguments="{cuda_complex} *psi".format(**self.cuda_types),
+            operation="""
+                    const {cuda_real} X = dX * (i - 0.5 * X_gridDIM);
+
+                    psi[i] *= exp(-0.5 * dt * V(X, t_initial));
+                    """.format(**self.cuda_types),
+            preamble=self.preamble
+        )
+
+        # # Find the kinetic energy minimum
+        # self.K_min = ReductionKernel(
+        #     self.wavefunction.real.dtype,
+        #     arguments="const {cuda_complex} *psi".format(**self.cuda_types), # Pure formality: The argument never used
+        #     neutral="0.",
+        #     reduce_expr="min(a, b)",
+        #     map_expr="K(dP * (i - 0.5 * X_gridDIM), t_initial)",
+        #     preamble=self.preamble
+        # )(self.wavefunction).get()
+
+        self.bloch_expK = ElementwiseKernel(
+            arguments="{cuda_complex} *psi".format(**self.cuda_types),
+            operation="""
+                    const {cuda_real} P = dP * (i - 0.5 * X_gridDIM);
+
+                    psi[i] *= exp(-dt * K(P, t_initial));
+                    """.format(**self.cuda_types),
+            preamble=self.preamble
         )
 
         ##########################################################################################
@@ -300,13 +346,13 @@ class SchrodingerWignerCUDA1D:
 
             func = self.compiled_observable[observable] = ReductionKernel(
                 self.wavefunction.real.dtype,
-                arguments="const {cuda_complex} *psi".format(**self.cuda_types),
+                arguments="const {cuda_complex} *psi, const {cuda_real} t".format(**self.cuda_types),
                 neutral="0.",
                 reduce_expr="a + b",
                 map_expr="pow(abs(psi[i]), 2) * (%s)" % observable,
                 preamble=preamble,
             )
-        return func(self._tmp).get()
+        return func(self._tmp, self.t).get()
 
     def get_Ehrenfest(self, t):
         """
@@ -358,6 +404,29 @@ class SchrodingerWignerCUDA1D:
             # add the expectation value for the kinetic energy
             self.hamiltonian_average[-1] += self.get_average(self.K)
 
+    def get_energy(self):
+        """
+        Calculate the expectation value of the Hamiltonian
+        :return:
+        """
+        # Make a copy of the wave function
+        gpuarray._memcpy_discontig(self._tmp, self.wavefunction)
+
+        # Normalize
+        self._tmp /= np.sqrt(self.norm_square(self._tmp).get())
+
+        av_V = self.get_average(self.V)
+
+        # go to the momentum representation
+        self.FAFT(self._tmp)
+
+        # Normalize the wave function as required in self.weighted_func_cuda_code
+        self._tmp /= np.sqrt(self.norm_square(self._tmp).get())
+
+        av_K = self.get_average(self.K)
+
+        return av_V + av_K
+
     def set_wavefunction(self, new_wave_func):
         """
         Set the wave function
@@ -382,6 +451,28 @@ class SchrodingerWignerCUDA1D:
 
         # normalize
         self.wavefunction /= np.sqrt(self.norm_square(self.wavefunction).get() * self.dX)
+
+        return self
+
+    def set_ground_state(self, nsteps=10000):
+        """
+        Obtain the ground state wave function by the imaginary time propagation
+        :param nsteps: number of the imaginary time steps to take
+        :return: self
+        """
+        self.wavefunction.fill(1.)
+        self.wavefunction /= np.sqrt(self.norm_square(self.wavefunction).get() * self.dX)
+
+        for _ in xrange(nsteps):
+            self.bloch_expV(self.wavefunction)
+
+            self.FAFT(self.wavefunction)
+            self.bloch_expK(self.wavefunction)
+            self.iFAFT(self.wavefunction)
+
+            self.bloch_expV(self.wavefunction)
+
+            self.wavefunction /= np.sqrt(self.norm_square(self.wavefunction).get() * self.dX)
 
         return self
 
@@ -496,7 +587,7 @@ if __name__=='__main__':
         "exp({cuda_complex}(-sigma * pow(X - x0, 2), p0 * X))"
     )
 
-    quant_sys.propagate(1000)
+    quant_sys.propagate(3000)
     #evolution = [quant_sys.propagate(5).wavefunction.get() for _ in xrange(500)]
     #plt.imshow(np.abs(evolution)**2)
     #plt.show()
