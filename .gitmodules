@@ -1,0 +1,3 @@
+[submodule "FAFT"]
+	path = FAFT
+	url = https://github.com/robertclf/FAFT
