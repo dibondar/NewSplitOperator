@@ -30,7 +30,7 @@ coulomb_sys_params = dict(
     X_gridDIM=2048,
 
     # the lattice constant is 2 * X_amplitude
-    X_amplitude=80.,
+    X_amplitude=150.,
 
     P_amplitude=20.,
 
@@ -138,14 +138,16 @@ class VisualizeDynamics:
         ax = fig.add_subplot(311)
 
         ax.set_title("Coordinate probability density")
-        self.x_rho_plot, = ax.semilogy([self.coulomb_sys.X.min(), self.coulomb_sys.X.max()], [1e-8, 2e-1])
+        self.x_rho_plot, = ax.semilogy([self.coulomb_sys.X.min(), self.coulomb_sys.X.max()], [1e-14, 2e-1])
         ax.set_ylabel('$\\left|\\Psi(x,t)\\right|^2$ (a.u.)')
         ax.set_xlabel('$x$ (a.u.)')
 
         ax = fig.add_subplot(312)
 
         ax.set_title("Momentum probability density")
-        self.p_rho_plot, = ax.plot([self.coulomb_sys.P.min(), self.coulomb_sys.P.max()], [1e-8, 2e-1])
+        self.p_rho_plot, = ax.semilogy([self.coulomb_sys.P.min(), self.coulomb_sys.P.max()], [1e-21, 2e-1])
+        #self.p_rho_plot, = ax.plot([0.2 * self.coulomb_sys.P.min(), 0.2 * self.coulomb_sys.P.max()], [0., 0.02])
+
         ax.set_ylabel('$\\left|\\Psi(p,t)\\right|^2$ (a.u.)')
         ax.set_xlabel('$p$ (a.u.)')
 
@@ -166,6 +168,10 @@ class VisualizeDynamics:
 
         print "\nGround state energy for the Coulomb potential %f (a.u.)\n" % \
               self.coulomb_sys.set_ground_state().get_energy()
+
+        # Save a copy of the ground state in the momentum representation
+        self.ground_state_p = self.coulomb_sys._tmp.get()
+        self.ground_state_p /= np.linalg.norm(self.ground_state_p)
 
         #self.short_sys = SchrodingerWignerCUDA1D(**self.short_sys_params)
         self.short_sys = None
@@ -207,17 +213,26 @@ class VisualizeDynamics:
         :return: image objects
         """
         # propagate
-        self.coulomb_sys.propagate(self.num_iteration)
+
         #self.short_sys.propagate(self.num_iteration)
+        self.coulomb_sys.propagate(self.num_iteration)
 
         self.x_rho_plot.set_data(
             self.coulomb_sys.X,
             np.abs(self.coulomb_sys.wavefunction.get()) ** 2
         )
 
+        # Wavefunction in the momentum representation
+        wavefunction_p = self.coulomb_sys._tmp.get()
+
+        # project out the ground state wave function
+        #wavefunction_p /= np.linalg.norm(wavefunction_p)
+        #wavefunction_p -= self.ground_state_p * np.vdot(self.ground_state_p, wavefunction_p)
+        #wavefunction_p /= np.linalg.norm(wavefunction_p)
+
         self.p_rho_plot.set_data(
             self.coulomb_sys.P,
-            np.abs(self.coulomb_sys._tmp.get()) ** 2
+            np.abs(wavefunction_p) ** 2
         )
 
         # prepare goup where simulations for the current frame will be saved
@@ -240,20 +255,22 @@ class VisualizeDynamics:
         return self.x_rho_plot, self.p_rho_plot, self.laser_filed_plot
 
 with h5py.File('strong_field_physics.hdf5', 'w') as file_results:
-    fig = plt.gcf()
+    fig = plt.figure(figsize=(10, 10))
+
     visualizer = VisualizeDynamics(fig, coulomb_sys_params, short_sys_params, file_results)
+
     animation = matplotlib.animation.FuncAnimation(
-        fig, visualizer, frames=min(881, visualizer.num_frames),
+        fig, visualizer, frames=max(881, visualizer.num_frames),
         init_func=visualizer.empty_frame, blit=True, repeat=False
     )
 
-    plt.show()
+    #plt.show()
 
     # Set up formatting for the movie files
-    # writer = matplotlib.animation.writers['mencoder'](fps=10, metadata=dict(artist='Denys Bondar'), bitrate=-1)
+    writer = matplotlib.animation.writers['mencoder'](fps=10, metadata=dict(artist='Denys Bondar'), bitrate=-1)
 
     # Save animation into the file
-    # animation.save('strong_field_physics.mp4', writer=writer)
+    animation.save('strong_field_physics.mp4', writer=writer)
 
     # extract the reference to quantum system
     coulomb_sys = visualizer.coulomb_sys

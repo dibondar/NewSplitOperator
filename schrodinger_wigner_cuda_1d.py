@@ -124,7 +124,7 @@ class SchrodingerWignerCUDA1D:
         #
         ##########################################################################################
 
-        self.wavefunction = gpuarray.zeros(self.X_gridDIM, np.complex64)
+        self.wavefunction = gpuarray.zeros(self.X_gridDIM, np.complex128)
 
         # Wave function copy (wavefunction in the momentum representation)
         self._tmp = gpuarray.empty_like(self.wavefunction)
@@ -196,14 +196,39 @@ class SchrodingerWignerCUDA1D:
         #
         ##########################################################################################
 
-        faft_dir = os.getcwd() + "/FAFT/FAFT_%d-points_C2C/FAFT%d_1D_C2C.so" % (self.X_gridDIM, 2 * self.X_gridDIM)
+        if self.wavefunction.dtype == np.complex128:
+            ######################################################################################
+            #
+            #   Loading FAFT for double precision
+            #
+            ######################################################################################
 
-        _faft_1D = ctypes.cdll.LoadLibrary(faft_dir)
+            faft_dir = os.getcwd() + "/FAFT/FAFT_%d-points_Z2Z/FAFT%d_1D_Z2Z.so" % (self.X_gridDIM, 2 * self.X_gridDIM)
+            _faft_1D = ctypes.cdll.LoadLibrary(faft_dir)
 
-        self.cuda_faft = getattr(_faft_1D, "FAFT%d_1D_C2C" % (2 * self.X_gridDIM))
+            self.cuda_faft = getattr(_faft_1D, "FAFT%d_1D_Z2Z" % (2 * self.X_gridDIM))
 
-        self.cuda_faft.restype = int
-        self.cuda_faft.argtypes = [ctypes.c_void_p, ctypes.c_float, ctypes.c_float, ctypes.c_int]
+            self.cuda_faft.restype = int
+            self.cuda_faft.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_double, ctypes.c_int]
+
+        elif self.wavefunction.dtype == np.complex64:
+            ######################################################################################
+            #
+            #   Loading FAFT for single precision
+            #
+            ######################################################################################
+
+            faft_dir = os.getcwd() + "/FAFT/FAFT_%d-points_C2C/FAFT%d_1D_C2C.so" % (self.X_gridDIM, 2 * self.X_gridDIM)
+
+            _faft_1D = ctypes.cdll.LoadLibrary(faft_dir)
+
+            self.cuda_faft = getattr(_faft_1D, "FAFT%d_1D_C2C" % (2 * self.X_gridDIM))
+
+            self.cuda_faft.restype = int
+            self.cuda_faft.argtypes = [ctypes.c_void_p, ctypes.c_float, ctypes.c_float, ctypes.c_int]
+
+        else:
+            raise NotImplementedError("Not supported numerical type of self.wavefunction")
 
         # Parameters
         self.segment = 0
